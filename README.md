@@ -2,6 +2,19 @@
 
 照片生成三维模型、基础网格检查与人工打印对接的实验性工作台。前端使用 React、React Three Fiber 和 Three.js，普通服务器版本使用 Node.js 24 与 SQLite。
 
+## 应用预览
+
+[打开形铸工作台](https://persons-filme-discussion-periodically.trycloudflare.com/) · 当前为临时演示地址。
+
+以下截图于 2026 年 11 月 13 日从线上应用的未登录页面采集，展示云端接入状态、制作参数和内置预估报价，不包含成员照片、模型或任务记录。
+
+![形铸桌面工作台：云端生成已接入与参考报价](docs/screenshots/workspace-desktop.png)
+
+<p>
+  <img src="docs/screenshots/workspace-mobile.png" alt="形铸手机工作台" width="300" />
+  <img src="docs/screenshots/estimate-mobile.png" alt="手机端报价明细与预估单下载" width="300" />
+</p>
+
 ## 当前状态
 
 - 支持在浏览器中预处理照片、自包含 GLB / STL 导入、三维查看与基础网格检查。
