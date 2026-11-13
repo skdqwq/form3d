@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { api as defaultApi } from '../worker/api.mjs';
+import { meshyRegion } from '../integration/meshy.mjs';
 import { openDatabase } from './database.mjs';
 import { constantEqual, issueSession, verifySession, readSession, sessionCookie, loginLimiter } from './auth.mjs';
 
@@ -26,7 +27,7 @@ export function configuration(env = process.env) {
   if (env.FORM3D_ACCESS_TOKEN === env.SESSION_SECRET) throw new Error('Access token and session secret must differ');
   const port = Number(env.PORT || 3103);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  return {origin:origin.origin, secure:origin.protocol === 'https:', accessToken:env.FORM3D_ACCESS_TOKEN, sessionSecret:env.SESSION_SECRET, meshyKey:env.MESHY_API_KEY || '', host:env.HOST || '127.0.0.1', port, database:env.DATABASE_PATH || resolve(ROOT, 'data/form3d.sqlite'), staticDir:resolve(ROOT, 'dist/client')};
+  return {origin:origin.origin, secure:origin.protocol === 'https:', accessToken:env.FORM3D_ACCESS_TOKEN, sessionSecret:env.SESSION_SECRET, meshyKey:env.MESHY_API_KEY || '', meshyRegion:meshyRegion(env), host:env.HOST || '127.0.0.1', port, database:env.DATABASE_PATH || resolve(ROOT, 'data/form3d.sqlite'), staticDir:resolve(ROOT, 'dist/client')};
 }
 
 function loginPage(error = '') {
@@ -50,7 +51,7 @@ function safePath(raw) {
 
 export function createAppServer({config = configuration(), db = openDatabase(config.database), api = defaultApi, now = Date.now} = {}) {
   const limiter=loginLimiter({now});
-  const env={DB:db, MESHY_API_KEY:config.meshyKey};
+  const env={DB:db, MESHY_API_KEY:config.meshyKey, MESHY_REGION:config.meshyRegion};
   const sameOrigin=req=>req.headers.origin===config.origin && req.headers['sec-fetch-site']!=='cross-site';
   async function route(req) {
     const pathname=safePath(req.url || '');

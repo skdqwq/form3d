@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build --outDir dist/client",
     "start": "node --env-file-if-exists=.env server/index.mjs",
-    "test": "node --test server/server.test.mjs worker/api.test.mjs integration/meshy.test.mjs"
+    "test": "node --test server/server.test.mjs server/refresh-assets.test.mjs worker/api.test.mjs integration/meshy.test.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

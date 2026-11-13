@@ -10,13 +10,13 @@ import {issueSession, verifySession, readSession} from './auth.mjs';
 
 const token='test-access-token-with-ample-length-123456';
 const secret='different-session-secret-for-test-123456';
-async function setup(t) {
+async function setup(t,{env={},api}={}) {
   const folder=await mkdtemp(join(tmpdir(),'form3d-test-'));
   await mkdir(join(folder,'public')); await writeFile(join(folder,'public/index.html'),'<!doctype html><title>Form3D</title>');
   await writeFile(join(folder,'secret.txt'),'never public');
   const db=openDatabase(join(folder,'database.sqlite'));
-  const config={...configuration({FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:secret}),staticDir:join(folder,'public')};
-  const {server}=createAppServer({config,db});
+  const config={...configuration({...env,FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:secret}),staticDir:join(folder,'public')};
+  const {server}=createAppServer({config,db,api});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin=`http://127.0.0.1:${server.address().port}`; config.origin=origin;
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));db.close();await rm(folder,{recursive:true,force:true})});
@@ -95,4 +95,12 @@ test('public HTTP, default placeholders and equal secrets are refused',()=>{
   assert.throws(()=>configuration({FORM3D_ACCESS_TOKEN:'replace-with-a-random-long-secret-value',SESSION_SECRET:secret}),/random secret/);
   assert.throws(()=>configuration({FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:token}),/differ/);
   assert.equal(configuration({APP_ORIGIN:'https://form3d.example.com',FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:secret}).secure,true);
+});
+
+test('region configuration defaults to global, rejects arbitrary URLs and reaches the worker env',async t=>{
+  const base={FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:secret};
+  assert.equal(configuration(base).meshyRegion,'global');
+  for(const MESHY_REGION of ['','https://evil.example','__proto__'])assert.throws(()=>configuration({...base,MESHY_REGION}),/MESHY_REGION/);
+  const s=await setup(t,{env:{MESHY_REGION:'cn'},api:async(request,env)=>new Response(JSON.stringify({region:env.MESHY_REGION}))});
+  assert.equal((await(await fetch(s.origin+'/api/reconstruction/status')).json()).region,'cn');
 });

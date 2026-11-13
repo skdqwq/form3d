@@ -33,3 +33,20 @@ test('SQLite enforces per-user three-per-day and global ten-per-day ceilings',as
 test('uncertain paid submission remains blocked and duplicate requests never resubmit',async()=>{const s=setup();s.adapter.createImageTo3D=async()=>{throw Object.assign(new Error('timeout'),{code:'NETWORK_ERROR'})};const body=input(),task=await (await s.api(req('/tasks','POST','alice',body),s.env)).json();assert.equal(task.status,'CREATE_UNCERTAIN');assert.equal((await s.api(req('/tasks','POST','alice',input()),s.env)).status,429);assert.equal((await (await s.api(req('/tasks','POST','alice',body),s.env)).json()).id,task.id);});
 test('download rechecks provider domain even when database contains an unexpected URL',async()=>{const s=setup(),task=await (await s.api(req('/tasks','POST','alice',input()),s.env)).json();s.DB.raw.prepare("UPDATE reconstruction_tasks SET status='SUCCEEDED',assets_json=? WHERE id=?").run(JSON.stringify({glb:'https://evil.example/x.glb'}),task.id);globalThis.fetch=()=>{throw new Error('must not fetch')};assert.equal((await s.api(req('/tasks/'+task.id+'/model.glb'),s.env)).status,502);});
 test('concurrent identical and distinct submissions admit only one remote task',async()=>{const s=setup(),body=input();const duplicate=await Promise.all([s.api(req('/tasks','POST','alice',body),s.env),s.api(req('/tasks','POST','alice',body),s.env)]);const records=await Promise.all(duplicate.map(r=>r.json()));assert.equal(records[0].id,records[1].id);assert.equal(s.counts().created,1);const t=setup();const competing=await Promise.all([t.api(req('/tasks','POST','alice',input()),t.env),t.api(req('/tasks','POST','alice',input()),t.env)]);assert.deepEqual(competing.map(r=>r.status).sort(),[202,429]);assert.equal(t.counts().created,1);});
+
+test('cn download preserves the returned signature and rejects database SSRF URLs',async()=>{
+ const s=setup();s.env.MESHY_REGION='cn';const task=await(await s.api(req('/tasks','POST','alice',input()),s.env)).json();
+ const signed='https://assets.meshy.cn/fresh/path/model.glb?Signature=cn%2Fonly%3D&Expires=42';
+ const update=asset=>s.DB.raw.prepare("UPDATE reconstruction_tasks SET status='SUCCEEDED',assets_json=? WHERE id=?").run(JSON.stringify({glb:asset}),task.id);
+ update(signed);let calls=0;globalThis.fetch=async(url,options)=>{calls++;assert.equal(url.href,signed);assert.equal(options.redirect,'error');return new Response(new Uint8Array([7,8,9]));};
+ const downloaded=await s.api(req('/tasks/'+task.id+'/model.glb'),s.env);assert.equal(downloaded.status,200);assert.deepEqual([...new Uint8Array(await downloaded.arrayBuffer())],[7,8,9]);
+ for(const asset of ['https://assets.meshy.cn.evil.example/a','https://evil.assets.meshy.cn/a','https://user@assets.meshy.cn/a','https://assets.meshy.cn:8443/a','http://169.254.169.254/a','not-a-url']){update(asset);assert.equal((await s.api(req('/tasks/'+task.id+'/model.glb'),s.env)).status,502);}
+ assert.equal(calls,1);
+ update(signed);globalThis.fetch=async(url,options)=>{assert.equal(options.redirect,'error');return new Response(null,{status:302,headers:{location:'http://127.0.0.1/private'}});};
+ assert.equal((await s.api(req('/tasks/'+task.id+'/model.glb'),s.env)).status,502);
+});
+
+test('invalid worker region fails before task admission or any paid submission',async()=>{
+ const s=setup();s.env.MESHY_REGION='https://evil.example';assert.equal((await s.api(req('/tasks','POST','alice',input()),s.env)).status,503);
+ assert.equal(s.counts().created,0);assert.equal(s.DB.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
+});

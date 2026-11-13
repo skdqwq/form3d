@@ -1,7 +1,8 @@
 // Server-only Meshy adapter. This is a library, not an HTTP handler.
 // Caller must authenticate the user, authorize each task, enforce quotas and
 // obtain informed photo-processing consent before invoking these functions.
-const BASE = 'https://api.meshy.ai/openapi/v1';
+const BASES = Object.freeze({global:'https://api.meshy.ai/openapi/v1',cn:'https://api.meshy.cn/openapi/v1'});
+const ASSET_HOSTS = new Set(['assets.meshy.ai', 'assets.meshy.cn']);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -12,6 +13,19 @@ export class MeshyError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+export function meshyRegion(env) {
+  const region = env?.MESHY_REGION === undefined ? 'global' : env.MESHY_REGION;
+  if (region !== 'global' && region !== 'cn')
+    throw new MeshyError('INVALID_CONFIG', 'MESHY_REGION must be global or cn.');
+  return region;
+}
+export function isSafeAssetUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === 'https:' && ASSET_HOSTS.has(u.hostname) && !u.username && !u.password && !u.port;
+  } catch { return false; }
 }
 function keyFrom(env) {
   const key = env?.MESHY_API_KEY;
@@ -40,13 +54,14 @@ function imageDataUri(bytes) {
   return `data:${type};base64,${btoa(chunks.join(''))}`;
 }
 async function request(env, path, method = 'GET', payload) {
+  const base = BASES[meshyRegion(env)];
   const key = keyFrom(env);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), method === 'POST' ? 60000 : 30000);
   try {
     let response;
     try {
-      response = await fetch(BASE + path, {
+      response = await fetch(base + path, {
         method, redirect: 'error', signal: controller.signal,
         headers: { Authorization: `Bearer ${key}`, ...(payload ? {'Content-Type':'application/json'} : {}) },
         ...(payload ? {body: JSON.stringify(payload)} : {})
@@ -74,15 +89,11 @@ function created(result) {
   catch { throw new MeshyError('INVALID_RESPONSE', 'Meshy 未返回有效任务编号。'); }
 }
 // Only selected output formats are passed on. Never fetch arbitrary URLs here.
-function safeAssets(urls) {
+export function safeAssets(urls) {
   const result = {};
   for (const format of ['glb', 'stl']) {
     if (!urls?.[format]) continue;
-    try {
-      const u = new URL(urls[format]);
-      if (u.protocol === 'https:' && u.hostname === 'assets.meshy.ai' && !u.username && !u.password && !u.port)
-        result[format] = u.href;
-    } catch { /* Drop malformed or unexpected URLs. */ }
+    if (isSafeAssetUrl(urls[format])) result[format] = new URL(urls[format]).href;
   }
   return result;
 }
@@ -101,6 +112,7 @@ function status(result) {
   };
 }
 export async function createImageTo3D(env, imageBytes) {
+  meshyRegion(env);
   keyFrom(env); // fail before encoding photo
   const image_url = imageDataUri(imageBytes);
   const result = await request(env, '/image-to-3d', 'POST', {image_url, ai_model:'meshy-7.1', should_texture:false, should_remesh:true, topology:'triangle', target_polycount:100000, target_formats:['glb','stl']});

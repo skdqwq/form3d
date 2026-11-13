@@ -37,6 +37,7 @@ pnpm start
 | `FORM3D_ACCESS_TOKEN` | 至少 32 字符的随机团队口令，只通过 HTTPS 登录表单输入。 |
 | `SESSION_SECRET` | 至少 32 字符、与团队口令不同的随机会话签名秘密。修改它会使旧会话失效。 |
 | `MESHY_API_KEY` | 仅服务端使用的 Meshy API 密钥，可留空以关闭生成。 |
+| `MESHY_REGION` | `global`（默认）请求 `api.meshy.ai`；`cn` 请求中国区官方 `api.meshy.cn`。只接受这两个值，不支持自定义接口 URL。 |
 | `DATABASE_PATH` | SQLite 文件位置，默认 `./data/form3d.sqlite`，Docker 为 `/data/form3d.sqlite`。 |
 | `HOST` | 默认 `127.0.0.1`；容器内部设为 `0.0.0.0`。 |
 | `PORT` | 默认 `3103`。 |
@@ -44,6 +45,10 @@ pnpm start
 团队登录会话有效期为 8 小时，Cookie 为 HttpOnly / SameSite Strict，公网 HTTPS 配置下添加 Secure。后端不会信任客户端传入的 `oai-authenticated-user-id` 或转发身份头。所有写请求检查 Origin。登录限额按实际 TCP 来源地址计算，不信任任意 `X-Forwarded-For`；经同一反向代理连接的登录请求可能共享 15 分钟 10 次的限额。
 
 当前任务 API 的限制为同一团队身份同时最多一个活动或提交结果不确定的任务、UTC 日最多 3 个、全站 UTC 日最多 10 个。它们是防重复和防滥用限制，不是账号套餐承诺或月度预算。应先核对自己的 Meshy 实际额度。
+
+中国大陆服务器访问全球接口受阻时，可以在服务端设置 `MESHY_REGION=cn`，使用 [Meshy 中国区官方 API](https://docs.meshy.cn/zh/api)。切换前先只读核对账号权限与既有任务；程序不会跨区域自动重试付费生成请求。
+
+模型下载只接受 `assets.meshy.ai` 和 `assets.meshy.cn` 两个精确 HTTPS 域名，禁止用户信息、非默认端口和重定向。已成功任务保留原来获得的签名下载地址，修改区域不会自动改写这些地址。管理员应先备份数据库，再使用 `server/refresh-assets.mjs` 的 `refreshTaskAssets` 对明确选定的任务与归属执行刷新：它仅 GET 查询原上游任务，校验任务身份、成功状态和所选区域的两个模型地址，再原子更新该条记录。刷新不创建任务、不消耗新的生成请求，也不输出签名地址；不要通过替换域名拼接下载链接。这个管理函数没有公开 HTTP 入口。
 
 ## Docker 部署
 

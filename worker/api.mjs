@@ -21,6 +21,7 @@ export function createApi({adapter=meshy,now=Date.now}={}){
    const user=request.headers.get('oai-authenticated-user-id');
    if(!user&&path===PREFIX+'/status'&&request.method==='GET')return json({configured:false,authenticated:false});
    if(!user)return json({error:'请先登录后使用照片重建。',code:'UNAUTHENTICATED'},401);
+   meshy.meshyRegion(env);
    const configured=typeof env.MESHY_API_KEY==='string'&&!!env.MESHY_API_KEY.trim();
    if(path===PREFIX+'/status'&&request.method==='GET')return json({configured:configured&&!!env.DB,authenticated:true,provider:'Meshy',maxTasksPerDay:3});
    if(!env.DB)return json({error:'任务存储尚未就绪。',code:'STORAGE_NOT_CONFIGURED'},503);
@@ -87,7 +88,8 @@ export function createApi({adapter=meshy,now=Date.now}={}){
    if(task.expires_at&&task.expires_at<t)return json({error:'模型下载链接已过期，请联系管理员。',code:'ASSET_EXPIRED'},410);
    let assets;try{assets=JSON.parse(task.assets_json||'{}')}catch{return json({error:'模型记录无效。'},502)}
    const ext=match[2].endsWith('glb')?'glb':'stl',asset=assets[ext];if(!asset)return json({error:'此模型格式不可用。'},404);
-   const remote=new URL(asset);if(remote.protocol!=='https:'||remote.hostname!=='assets.meshy.ai'||remote.username||remote.password||remote.port)return json({error:'模型下载地址无效。'},502);
+   if(!meshy.isSafeAssetUrl(asset))return json({error:'模型下载地址无效。'},502);
+   const remote=new URL(asset);
    const upstream=await fetch(remote,{redirect:'error',signal:AbortSignal.timeout(60000)});
    if(!upstream.ok||!upstream.body)return json({error:'模型暂时无法下载或已过期。'},502);
    if(Number(upstream.headers.get('content-length'))>100*1024*1024)return json({error:'模型过大，请联系管理员下载。'},413);
