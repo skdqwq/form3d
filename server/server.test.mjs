@@ -10,13 +10,13 @@ import {issueSession, verifySession, readSession} from './auth.mjs';
 
 const token='test-access-token-with-ample-length-123456';
 const secret='different-session-secret-for-test-123456';
-async function setup(t,{env={},api,accessToken=token}={}) {
+async function setup(t,{env={},api,accessToken=token,now}={}) {
   const folder=await mkdtemp(join(tmpdir(),'form3d-test-'));
   await mkdir(join(folder,'public')); await writeFile(join(folder,'public/index.html'),'<!doctype html><title>Form3D</title>');
   await writeFile(join(folder,'secret.txt'),'never public');
   const db=openDatabase(join(folder,'database.sqlite'));
   const config={...configuration({...env,FORM3D_ACCESS_TOKEN:accessToken,SESSION_SECRET:secret}),staticDir:join(folder,'public')};
-  const {server}=createAppServer({config,db,api});
+  const {server}=createAppServer({config,db,api,now});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin=`http://127.0.0.1:${server.address().port}`; config.origin=origin;
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));db.close();await rm(folder,{recursive:true,force:true})});
@@ -30,7 +30,7 @@ test('a 10-character team code signs in while sessions use the independent stron
   const accessToken='DemoTest42'; // Synthetic fixture only, never a deployed credential.
   const s=await setup(t,{accessToken});
   const page=await(await fetch(s.origin+'/login')).text();
-  assert.match(page,/团队登录码/);assert.match(page,/minlength="10"/);assert.match(page,/maxlength="512"/);
+  assert.match(page,/团队登录码/);assert.match(page,/minlength="3"/);assert.match(page,/maxlength="512"/);
   assert.match(page,/生成需算力费用/);assert.doesNotMatch(page,new RegExp(accessToken));
   const wrong=await fetch(s.origin+'/auth/login',{method:'POST',headers:{origin:s.origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token:'DemoTest43'})});
   assert.equal(wrong.status,401);assert.match(await wrong.text(),/登录码不正确/);
@@ -40,6 +40,36 @@ test('a 10-character team code signs in while sessions use the independent stron
   assert.equal(verifySession(session,accessToken),null);
   assert.equal((await(await fetch(s.origin+'/api/reconstruction/status',{headers:{cookie}})).json()).authenticated,true);
   assert.equal(s.db.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
+});
+
+test('three-character Chinese team codes sign in with trimmed input and keep session signing independent',async t=>{
+  const accessToken='山海云'; // Synthetic fixture only, never a deployed credential.
+  const s=await setup(t,{accessToken:' \u3000'+accessToken+'\u3000 '});
+  assert.equal(s.config.accessToken,accessToken);
+  const page=await(await fetch(s.origin+'/login')).text();
+  assert.match(page,/minlength="3"/);assert.doesNotMatch(page,new RegExp(accessToken));
+  const submit=(body,origin=s.origin)=>fetch(s.origin+'/auth/login',{method:'POST',redirect:'manual',headers:{origin,'content-type':'application/x-www-form-urlencoded'},body});
+  const body=new URLSearchParams({token:' \u3000'+accessToken+'\u3000 '});
+  assert.equal((await submit(body,'https://evil.example')).status,403);
+  assert.equal((await submit(new URLSearchParams({token:'山海雨'}))).status,401);
+  assert.equal((await submit(new URLSearchParams([['token',accessToken],['token',accessToken]]))).status,401);
+  assert.equal((await submit(new URLSearchParams({token:accessToken+'\n'}))).status,401);
+  const signed=await submit(body);assert.equal(signed.status,303);
+  const cookie=signed.headers.get('set-cookie').split(';')[0],session=readSession(cookie);
+  assert.equal(verifySession(session,secret),'self-hosted-admin');
+  assert.equal(verifySession(session,accessToken),null);
+  assert.equal((await(await fetch(s.origin+'/api/reconstruction/status',{headers:{cookie}})).json()).authenticated,true);
+  assert.equal((await fetch(s.origin+'/api/reconstruction/tasks')).status,401);
+  assert.equal(s.db.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
+});
+
+test('configuration and submitted codes use the same NFC normalization',async t=>{
+  const s=await setup(t,{accessToken:'Cafe\u0301-Demo42'});
+  assert.equal(s.config.accessToken,'Café-Demo42');
+  for(const token of ['Café-Demo42','Cafe\u0301-Demo42']){
+    const response=await fetch(s.origin+'/auth/login',{method:'POST',redirect:'manual',headers:{origin:s.origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({token})});
+    assert.equal(response.status,303);
+  }
 });
 
 test('a valid 512-character code survives form encoding within the bounded login body',async t=>{
@@ -94,9 +124,12 @@ test('signatures, expiry, duplicate cookies and future claims are rejected',()=>
   assert.equal(readSession('form3d_session=a; form3d_session=b'),null);
 });
 test('login is rate limited and forwarded addresses do not bypass the limit',async t=>{
-  const s=await setup(t,{accessToken:'DemoTest42'});
+  let time=2_000_000_000_000;
+  const s=await setup(t,{accessToken:'山海云',now:()=>time});
   for(let i=0;i<10;i++) assert.equal((await fetch(s.origin+'/auth/login',{method:'POST',headers:{origin:s.origin,'content-type':'application/x-www-form-urlencoded','x-forwarded-for':`1.2.3.${i}`},body:'token=wrong'})).status,401);
   assert.equal((await login(s,{'x-forwarded-for':'4.5.6.7'})).status,429);
+  time+=15*60*1000;
+  assert.equal((await login(s)).status,303);
 });
 function rawGet(origin,path,headers={}) {
   return new Promise((resolve,reject)=>{const req=httpRequest(new URL(origin),{path,headers},res=>{let body='';res.on('data',b=>body+=b);res.on('end',()=>resolve({status:res.statusCode,body}))});req.on('error',reject);req.end()});
@@ -133,7 +166,7 @@ test('public HTTP, default placeholders and equal secrets are refused',()=>{
 
 test('login code validation rejects weak or malformed values without weakening the session secret',()=>{
   const env={FORM3D_ACCESS_TOKEN:'DemoTest42',SESSION_SECRET:secret};
-  for(const bad of [undefined,42,'Abcd12345','A1'+'b'.repeat(511),'1234567890','abcdefghij',' DemoTest42','DemoTest42 ',
+  for(const bad of [undefined,42,'','   ','山海','山 海云','山海1','abc','A1b','A1'+'b'.repeat(511),'山'.repeat(513),'Abcd12345','1234567890','abcdefghij',
     'Demo\tTest42','Demo\nTest42','Demo\0Test42','Demo\u007fTest42','Demo\u0085Test42',
     'change-me123','ReplaceThis42','exampleCode42','your-code123','YourCode42']){
     assert.throws(()=>configuration({...env,FORM3D_ACCESS_TOKEN:bad}),/FORM3D_ACCESS_TOKEN/);
@@ -142,7 +175,10 @@ test('login code validation rejects weak or malformed values without weakening t
     assert.throws(()=>configuration({...env,SESSION_SECRET:bad}),/SESSION_SECRET/);
   }
   assert.equal(configuration({...env,SESSION_SECRET:'s'.repeat(32)}).sessionSecret.length,32);
+  assert.equal(configuration({...env,FORM3D_ACCESS_TOKEN:' \u3000山海云\u3000 '}).accessToken,'山海云');
+  assert.equal(configuration({...env,FORM3D_ACCESS_TOKEN:' DemoTest42 '}).accessToken,'DemoTest42');
   assert.throws(()=>configuration({FORM3D_ACCESS_TOKEN:token,SESSION_SECRET:token}),/differ/);
+  assert.throws(()=>configuration({FORM3D_ACCESS_TOKEN:' '+token+' ',SESSION_SECRET:token}),/differ/);
 });
 
 test('region configuration defaults to global, rejects arbitrary URLs and reaches the worker env',async t=>{

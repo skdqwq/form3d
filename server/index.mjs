@@ -15,6 +15,8 @@ const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TYPES = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.svg':'image/svg+xml','.webp':'image/webp','.ico':'image/x-icon','.woff2':'font/woff2'};
 const fail = (status, message) => new Response(JSON.stringify({error: message}), {status, headers: {'content-type':'application/json; charset=utf-8'}});
 const redirect = (location, headers = {}) => new Response(null, {status:303, headers:{location, ...headers}});
+// Normalize only the human-entered team code; cryptographic secrets stay exact.
+const normalizeTeamCode = value => typeof value === 'string' && !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? value.trim().normalize('NFC') : null;
 
 export function configuration(env = process.env) {
   let origin;
@@ -22,17 +24,17 @@ export function configuration(env = process.env) {
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('APP_ORIGIN must contain only scheme and host');
   if (origin.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) throw new Error('Public deployments require an HTTPS APP_ORIGIN');
   const invalidSecret = value => typeof value !== 'string' || value !== value.trim() || /[\u0000-\u001f\u007f-\u009f]/.test(value) || /^(change|replace|example|your)/i.test(value);
-  const accessCode = env.FORM3D_ACCESS_TOKEN;
-  if (invalidSecret(accessCode) || accessCode.length < 10 || accessCode.length > 512 || !/[A-Za-z]/.test(accessCode) || !/[0-9]/.test(accessCode)) throw new Error('FORM3D_ACCESS_TOKEN must be a 10–512 character login code containing letters and digits, without control characters, surrounding whitespace or placeholders');
+  const accessCode = normalizeTeamCode(env.FORM3D_ACCESS_TOKEN);
+  if (invalidSecret(accessCode) || accessCode.length > 512 || !(/^\p{Script=Han}{3,}$/u.test(accessCode) || (accessCode.length >= 10 && /[A-Za-z]/.test(accessCode) && /[0-9]/.test(accessCode)))) throw new Error('FORM3D_ACCESS_TOKEN must contain at least 3 Chinese characters or at least 10 characters including letters and digits, up to 512 characters; controls and placeholders are not allowed');
   if (invalidSecret(env.SESSION_SECRET) || env.SESSION_SECRET.length < 32) throw new Error('SESSION_SECRET must be an independent random secret of at least 32 characters, without control characters, surrounding whitespace or placeholders');
-  if (env.FORM3D_ACCESS_TOKEN === env.SESSION_SECRET) throw new Error('Access token and session secret must differ');
+  if (accessCode === env.SESSION_SECRET) throw new Error('Access token and session secret must differ');
   const port = Number(env.PORT || 3103);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
-  return {origin:origin.origin, secure:origin.protocol === 'https:', accessToken:env.FORM3D_ACCESS_TOKEN, sessionSecret:env.SESSION_SECRET, meshyKey:env.MESHY_API_KEY || '', meshyRegion:meshyRegion(env), host:env.HOST || '127.0.0.1', port, database:env.DATABASE_PATH || resolve(ROOT, 'data/form3d.sqlite'), staticDir:resolve(ROOT, 'dist/client')};
+  return {origin:origin.origin, secure:origin.protocol === 'https:', accessToken:accessCode, sessionSecret:env.SESSION_SECRET, meshyKey:env.MESHY_API_KEY || '', meshyRegion:meshyRegion(env), host:env.HOST || '127.0.0.1', port, database:env.DATABASE_PATH || resolve(ROOT, 'data/form3d.sqlite'), staticDir:resolve(ROOT, 'dist/client')};
 }
 
 function loginPage(error = '') {
-  return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>形铸团队登录</title><style>body{margin:0;background:#f5f8fc;font:16px/1.6 system-ui,sans-serif;color:#173153}main{max-width:440px;margin:12vh auto;padding:32px;background:white;border:1px solid #d5dfed}h1{font-size:26px}input,button{box-sizing:border-box;width:100%;padding:13px;font:inherit;margin-top:12px}input{border:1px solid #a8bdd7}button{border:0;background:#174e9e;color:white}p{color:#64738a}a{color:#174e9e}.error{color:#a22}</style><main><h1>形铸团队登录</h1><p>工作台和预估报价可公开浏览。生成需算力费用，输入项目组提供的登录码体验。</p><p>登录后的任务记录由项目组共享。</p>${error ? '<p class="error">' + error + '</p>' : ''}<form method="post" action="/auth/login"><label for="token">团队登录码</label><input id="token" name="token" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required minlength="10" maxlength="512"><button type="submit">登录工作台</button></form><p><a href="/">返回工作台</a></p></main></html>`, {headers:{'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
+  return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>形铸团队登录</title><style>body{margin:0;background:#f5f8fc;font:16px/1.6 system-ui,sans-serif;color:#173153}main{max-width:440px;margin:12vh auto;padding:32px;background:white;border:1px solid #d5dfed}h1{font-size:26px}input,button{box-sizing:border-box;width:100%;padding:13px;font:inherit;margin-top:12px}input{border:1px solid #a8bdd7}button{border:0;background:#174e9e;color:white}p{color:#64738a}a{color:#174e9e}.error{color:#a22}</style><main><h1>形铸团队登录</h1><p>工作台和预估报价可公开浏览。生成需算力费用，输入项目组提供的登录码体验。</p><p>登录后的任务记录由项目组共享。</p>${error ? '<p class="error">' + error + '</p>' : ''}<form method="post" action="/auth/login"><label for="token">团队登录码</label><input id="token" name="token" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required minlength="3" maxlength="512"><button type="submit">登录工作台</button></form><p><a href="/">返回工作台</a></p></main></html>`, {headers:{'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
 }
 async function bodyBytes(request, limit = MAX_BODY) {
   const declared = request.headers['content-length'];
@@ -69,7 +71,8 @@ export function createAppServer({config = configuration(), db = openDatabase(con
       if (!req.headers['content-type']?.toLowerCase().startsWith('application/x-www-form-urlencoded')) return fail(415,'请求格式无效。');
       // Accommodate URL encoding of the configured 512-character maximum; remain bounded.
       const body=await bodyBytes(req,8192), params=new URLSearchParams(body.toString('utf8'));
-      if (params.getAll('token').length!==1 || !constantEqual(params.get('token') || '',config.accessToken)) return new Response(await loginPage('登录码不正确。').text(),{status:401,headers:loginPage().headers});
+      const submittedCode=normalizeTeamCode(params.get('token'));
+      if (params.getAll('token').length!==1 || submittedCode===null || !constantEqual(submittedCode,config.accessToken)) return new Response(await loginPage('登录码不正确。').text(),{status:401,headers:loginPage().headers});
       return redirect('/',{'set-cookie':sessionCookie(issueSession(config.sessionSecret,now()),config.secure)});
     }
     if (pathname==='/auth/logout' && req.method==='POST') {
