@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+node_modules
+data
+*.sqlite*
+*.db*
+*.pem
+*.key
+*.log
+.openai

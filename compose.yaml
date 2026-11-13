@@ -1,0 +1,24 @@
+services:
+  form3d:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3103
+      DATABASE_PATH: /data/form3d.sqlite
+    ports:
+      - "127.0.0.1:3103:3103"
+    volumes:
+      - form3d-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    mem_limit: 512m
+    cpus: 1
+volumes:
+  form3d-data:

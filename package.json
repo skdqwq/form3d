@@ -1,0 +1,23 @@
+{
+  "name": "form3d",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=24.0.0 <25" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build --outDir dist/client",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "test": "node --test server/server.test.mjs worker/api.test.mjs integration/meshy.test.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.4.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": { "vite": "^7.2.0" },
+  "packageManager": "pnpm@11.25.0"
+}

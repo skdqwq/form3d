@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+node_modules
+dist
+data
+*.sqlite*
+*.db*
+*.pem
+*.key
+*.log
+.openai
+defense-work
+defense-output

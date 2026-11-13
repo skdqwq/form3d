@@ -1,0 +1,94 @@
+# 形铸 FORM3D
+
+照片生成三维模型、基础网格检查与人工打印对接的实验性工作台。前端使用 React、React Three Fiber 和 Three.js，普通服务器版本使用 Node.js 24 与 SQLite。
+
+## 当前状态
+
+- 支持在浏览器中预处理照片、自包含 GLB / STL 导入、三维查看与基础网格检查。
+- 提供 Meshy 7.1 图片生成任务接口、任务状态保存、幂等提交、生成限额和受控模型下载。**真实照片生成效果需要使用自己的 Meshy 账号完成测试，接口测试不等于真实模型质量验证。**
+- 未配置 `MESHY_API_KEY` 时，网站会明确显示生成服务待配置，不会调用付费服务。
+- 尺寸、材质和数量用于收集制作偏好，最终价格、工期、打印与物流均由人工确认。没有接入支付或正式订单系统。
+- 检查包含尺寸、面数、部分拓扑问题与满足条件的封闭体积，不覆盖完整壁厚、支撑、自相交和实际工艺验收，不能据此保证可打印。
+
+这个版本公开展示工作台，生成任务仅供项目组使用。团队口令不是完整的多用户账号系统。所有持有口令的成员共享同一个任务身份、历史和额度，请只向可信项目组成员发放，不要发给普通访客。
+
+## 本地运行
+
+需要 Node.js 24 和 `pnpm@11.25.0`。
+
+```sh
+pnpm install --frozen-lockfile
+cp .env.example .env
+# 编辑 .env，生成两个不同的随机秘密，分别填写团队口令和会话密钥。
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+pnpm build
+pnpm start
+```
+
+随机值只保存在自己的 `.env` 或服务器秘密管理中，不要提交 Git，也不要粘贴到公开截图或聊天记录。分别运行随机生成命令两次。默认访问 `http://127.0.0.1:3103`。生成入口的“登录”会打开团队口令表单，`/logout` 可退出。
+
+`pnpm dev` 仅启动 Vite 前端开发服务器，不提供真实任务 API。完整接口联调请运行构建后的 Node 服务。
+
+## 服务器环境变量
+
+| 变量 | 说明 |
+| --- | --- |
+| `APP_ORIGIN` | 对外访问 origin，如 `https://form3d.example.com`，不包含路径。公网部署必须 HTTPS，本地回环地址允许 HTTP。 |
+| `FORM3D_ACCESS_TOKEN` | 至少 32 字符的随机团队口令，只通过 HTTPS 登录表单输入。 |
+| `SESSION_SECRET` | 至少 32 字符、与团队口令不同的随机会话签名秘密。修改它会使旧会话失效。 |
+| `MESHY_API_KEY` | 仅服务端使用的 Meshy API 密钥，可留空以关闭生成。 |
+| `DATABASE_PATH` | SQLite 文件位置，默认 `./data/form3d.sqlite`，Docker 为 `/data/form3d.sqlite`。 |
+| `HOST` | 默认 `127.0.0.1`；容器内部设为 `0.0.0.0`。 |
+| `PORT` | 默认 `3103`。 |
+
+团队登录会话有效期为 8 小时，Cookie 为 HttpOnly / SameSite Strict，公网 HTTPS 配置下添加 Secure。后端不会信任客户端传入的 `oai-authenticated-user-id` 或转发身份头。所有写请求检查 Origin。登录限额按实际 TCP 来源地址计算，不信任任意 `X-Forwarded-For`；经同一反向代理连接的登录请求可能共享 15 分钟 10 次的限额。
+
+当前任务 API 的限制为同一团队身份同时最多一个活动或提交结果不确定的任务、UTC 日最多 3 个、全站 UTC 日最多 10 个。它们是防重复和防滥用限制，不是账号套餐承诺或月度预算。应先核对自己的 Meshy 实际额度。
+
+## Docker 部署
+
+先准备 `.env`，将 `APP_ORIGIN` 设置为实际 HTTPS 地址，其余秘密使用独立随机值。不要复用同一台服务器上其他应用的环境文件或密钥。
+
+```sh
+chmod 600 .env
+docker compose up -d --build
+curl --fail http://127.0.0.1:3103/healthz
+```
+
+Compose 只将服务绑定在服务器 `127.0.0.1:3103`，不占用 80 或 443。SQLite 数据保存在 `form3d-data` 命名卷，镜像以非 root 用户运行。更新前备份数据卷，不要使用 `docker compose down -v` 删除正式任务数据。
+
+若服务器无法访问 npm 仓库，可在受信任的构建环境先运行 `pnpm build`，传输经过校验的源码和 `dist/client`，然后运行 `docker build -f Dockerfile.runtime -t form3d:local .`。该替代镜像仍需获取官方 Node 基础镜像，但不在服务器上安装前端依赖。不要把 `.env`、数据库或 `node_modules` 打进传输包。
+
+若现有 Caddy 直接运行在宿主机，可在保留其已有站点配置的前提下增加独立站点块：
+
+```caddyfile
+form3d.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3103
+}
+```
+
+若 Caddy 在 Docker 容器内，其 `127.0.0.1` 指向 Caddy 容器自身，不能直接使用以上上游。需要由运维将两个容器接入同一受控 Docker 网络并以容器服务名反代，或使用已有的宿主机访问方案。先验证新配置，不要覆盖现有 Caddyfile。HTTPS 和域名配置完成后再开放真实照片和口令操作，不要通过明文公网 HTTP 传输它们。
+
+## 数据与生成费用
+
+本方不持久保存原始照片，浏览器预处理后提交给 Meshy。第三方处理与保留规则以其政策为准，本项目没有验证第三方 24 小时删图。仅上传已获得相应使用许可的图片。
+
+任务数据库保存状态、归属、时间以及模型的临时下载地址，因此数据库、备份与服务器日志不应公开。生成文件由 Meshy 暂存，成功后应及时下载，链接过期不会自动重新生成。当前没有长期模型归档功能。
+
+现有请求采用 `meshy-7.1`、不生成纹理。费用与配额以 [Meshy 官方 API 价格](https://docs.meshy.ai/en/api/pricing) 和账号账单为准。付费 POST 不自动重试。若任务进入 `CREATE_UNCERTAIN`，先在 Meshy 后台核对实际创建结果，再由管理员处理，避免重复消耗额度。
+
+## 检查与开发
+
+```sh
+pnpm test
+pnpm build
+```
+
+测试使用内存或临时 SQLite 与模拟服务适配器，覆盖认证、Origin、会话签名/过期、限流、任务归属、幂等、图片校验和下载域名限制，不会发起付费 Meshy 请求。
+
+目录职责：`src/` 为工作台，`server/` 为 Node 服务器与会话/SQLite，`worker/api.mjs` 为可移植任务 API，`integration/meshy.mjs` 为服务端适配器，`drizzle/` 为受校验的数据库迁移。不要修改已经应用的迁移内容。
+
+## 许可
+
+项目代码采用 MIT 许可证，见 [LICENSE](LICENSE)。第三方依赖及 Meshy 服务各自适用其许可证或服务条款。项目内不包含成员照片、私人聊天、真实问卷、账号密钥或模型输出。
