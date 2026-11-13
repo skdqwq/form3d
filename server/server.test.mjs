@@ -125,6 +125,54 @@ test('configured public service status does not grant a forged identity or gener
   assert.deepEqual(await authenticated.json(),{configured:true,authenticated:true,provider:'Meshy',maxTasksPerDay:3});
   assert.equal(s.db.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
 });
+test('login, failed-login retry and logout responses preserve the native form origin policy',async t=>{
+  const s=await setup(t);
+  for(const path of ['/login','/logout']){
+    const page=await fetch(s.origin+path);
+    assert.equal(page.status,200);
+    assert.equal(page.headers.get('referrer-policy'),'same-origin');
+    assert.match(page.headers.get('content-type'),/text\/html/);
+    assert.match(page.headers.get('content-security-policy'),/form-action 'self'/);
+    assert.equal(page.headers.get('cache-control'),'no-store');
+    assert.match(await page.text(),/<form method="post"/);
+  }
+  const wrong=await fetch(s.origin+'/auth/login',{method:'POST',redirect:'manual',headers:{origin:s.origin,'content-type':'application/x-www-form-urlencoded'},body:'token=wrong'});
+  assert.equal(wrong.status,401);
+  assert.equal(wrong.headers.get('referrer-policy'),'same-origin');
+  assert.match(await wrong.text(),/<form method="post" action="\/auth\/login"/);
+  const signed=await login(s);
+  assert.equal(signed.status,303);
+  assert.equal(signed.headers.get('referrer-policy'),'same-origin');
+  const cookie=signed.headers.get('set-cookie').split(';')[0];
+  const out=await fetch(s.origin+'/auth/logout',{method:'POST',headers:{cookie,origin:s.origin},redirect:'manual'});
+  assert.equal(out.status,303);
+  assert.equal(out.headers.get('referrer-policy'),'same-origin');
+  assert.match(out.headers.get('set-cookie'),/Max-Age=0/);
+});
+
+test('null, missing, foreign and cross-site origins cannot write through login, logout or task routes',async t=>{
+  const s=await setup(t),signed=await login(s),cookie=signed.headers.get('set-cookie').split(';')[0];
+  const rejected=[
+    {},
+    {origin:'null','sec-fetch-site':'same-origin'},
+    {origin:'https://evil.example','sec-fetch-site':'same-site'},
+    {origin:s.origin+'/'},
+    {origin:s.origin,'sec-fetch-site':'cross-site'},
+    {origin:'null','x-forwarded-origin':s.origin,'x-forwarded-host':new URL(s.origin).host,'x-forwarded-proto':'http'}
+  ];
+  for(const path of ['/auth/login','/auth/logout','/api/reconstruction/tasks']){
+    for(const originHeaders of rejected){
+      const body=path==='/api/reconstruction/tasks'?'{}':new URLSearchParams({token:s.config.accessToken});
+      const response=await fetch(s.origin+path,{method:'POST',redirect:'manual',headers:{cookie,'content-type':path==='/api/reconstruction/tasks'?'application/json':'application/x-www-form-urlencoded',...originHeaders},body});
+      assert.equal(response.status,403,path);
+      assert.equal(response.headers.get('set-cookie'),null);
+      assert.deepEqual(await response.json(),{error:'请求来源无效。'});
+    }
+  }
+  assert.equal((await(await fetch(s.origin+'/api/reconstruction/status',{headers:{cookie}})).json()).authenticated,true);
+  assert.equal(s.db.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
+});
+
 test('login rejects absent/cross Origin; protected POST and logout reject CSRF',async t=>{
   const s=await setup(t);
   assert.equal((await login(s,{origin:'https://evil.example'})).status,403);

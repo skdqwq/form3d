@@ -107,7 +107,8 @@ export function createAppServer({config = configuration(), db = openDatabase(con
     try {
       const response=await route(req);
       response.headers.set('x-content-type-options','nosniff');
-      response.headers.set('referrer-policy','no-referrer');
+      // Native POST forms need their same-origin Origin header for CSRF checks.
+      response.headers.set('referrer-policy','same-origin');
       response.headers.set('x-frame-options','DENY');
       if (!response.headers.has('cache-control')) response.headers.set('cache-control','no-store');
       res.writeHead(response.status,Object.fromEntries(response.headers));
