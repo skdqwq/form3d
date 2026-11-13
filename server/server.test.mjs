@@ -40,6 +40,19 @@ test('public page and unconfigured status work; forged identity never authentica
   const post=await fetch(s.origin+'/api/reconstruction/tasks',{method:'POST',headers:{cookie,origin:s.origin,'content-type':'application/json'},body:'{}'});
   assert.equal(post.status,503);assert.equal((await post.json()).code,'NOT_CONFIGURED');
 });
+test('configured public service status does not grant a forged identity or generation access',async t=>{
+  const s=await setup(t,{env:{MESHY_API_KEY:'test-only-key-not-for-network',MESHY_REGION:'cn'}});
+  const headers={'oai-authenticated-user-id':'self-hosted-admin','x-forwarded-user':'self-hosted-admin'};
+  const response=await fetch(s.origin+'/api/reconstruction/status',{headers});
+  assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await response.json(),{configured:true,authenticated:false});
+  assert.equal((await fetch(s.origin+'/api/reconstruction/tasks',{headers})).status,401);
+  assert.equal((await fetch(s.origin+'/api/reconstruction/tasks',{method:'POST',headers:{...headers,origin:s.origin,'content-type':'application/json'},body:'{}'})).status,401);
+  const signed=await login(s),cookie=signed.headers.get('set-cookie').split(';')[0];
+  const authenticated=await fetch(s.origin+'/api/reconstruction/status',{headers:{cookie}});
+  assert.deepEqual(await authenticated.json(),{configured:true,authenticated:true,provider:'Meshy',maxTasksPerDay:3});
+  assert.equal(s.db.raw.prepare('SELECT COUNT(*) AS n FROM reconstruction_tasks').get().n,0);
+});
 test('login rejects absent/cross Origin; protected POST and logout reject CSRF',async t=>{
   const s=await setup(t);
   assert.equal((await login(s,{origin:'https://evil.example'})).status,403);

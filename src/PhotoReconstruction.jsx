@@ -10,7 +10,7 @@ function savePending(id){try{id?localStorage.setItem(PENDING_KEY,id):localStorag
 async function request(path, options={}){
  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(), options.method==='POST'?70000:30000);
  try{
-  const r=await fetch(ROOT+path,{credentials:'same-origin',...options,signal:controller.signal});
+  const r=await fetch(ROOT+path,{credentials:'same-origin',cache:'no-store',...options,signal:controller.signal});
   const body=await r.json().catch(()=>null);
   if(!r.ok){const e=new Error(body?.error||'服务暂时无法处理请求，请稍后查询。');e.code=body?.code;e.status=r.status;throw e}
   if(!body||typeof body!=='object')throw new Error('服务返回了无法识别的结果。');
@@ -49,10 +49,27 @@ async function modelBlob(path){
 }
 export default function PhotoReconstruction({kind,onKindChange,onModel}){
  const [connection,setConnection]=useState(null),[photo,setPhoto]=useState(null),[image,setImage]=useState(''),[processing,setProcessing]=useState(false),[consent,setConsent]=useState(false),[submitting,setSubmitting]=useState(false),[error,setError]=useState(''),[tasks,setTasks]=useState([]),[task,setTask]=useState(null),[pending,setPending]=useState(savedPending),[refreshing,setRefreshing]=useState(false),[loadingModel,setLoadingModel]=useState(false);
- const submitLock=useRef(false),sequence=useRef(0),alive=useRef(true),polling=useRef(false),requestId=useRef(savedPending());
+ const [connectionPhase,setConnectionPhase]=useState('checking');
+ const submitLock=useRef(false),sequence=useRef(0),statusSequence=useRef(0),alive=useRef(true),polling=useRef(false),requestId=useRef(savedPending());
+ async function checkConnection(){
+  const check=++statusSequence.current;setConnectionPhase('checking');
+  try{
+   const status=await request('/status');
+   if(typeof status.configured!=='boolean'||typeof status.authenticated!=='boolean')throw new Error('无法识别服务状态。');
+   if(!alive.current||check!==statusSequence.current)return null;
+   setConnection(status);setConnectionPhase('ready');
+   if(!status.authenticated){setTasks([]);setTask(null)}
+   return status;
+  }catch{
+   if(alive.current&&check===statusSequence.current){setConnection(null);setConnectionPhase('error')}
+   return null;
+  }
+ }
  useEffect(()=>{alive.current=true;let cancelled=false;
-  (async()=>{try{const status=await request('/status');if(cancelled)return;setConnection(status);if(status.authenticated){const data=await request('/tasks');if(cancelled)return;setTasks(data.tasks||[]);const prior=requestId.current&&(data.tasks||[]).find(t=>t.requestId===requestId.current);if(prior){setTask(prior);if(prior.status!=='CREATE_UNCERTAIN'){savePending(null);setPending(null);requestId.current=null}}}}catch(e){if(!cancelled)setError(e.message)}})();
-  return()=>{cancelled=true;alive.current=false;sequence.current++};
+  (async()=>{const status=await checkConnection();if(cancelled||!status?.authenticated)return;
+   try{const data=await request('/tasks');if(cancelled)return;setTasks(data.tasks||[]);const prior=requestId.current&&(data.tasks||[]).find(t=>t.requestId===requestId.current);if(prior){setTask(prior);if(prior.status!=='CREATE_UNCERTAIN'){savePending(null);setPending(null);requestId.current=null}}}catch(e){if(!cancelled)setError(e.message)}
+  })();
+  return()=>{cancelled=true;alive.current=false;sequence.current++;statusSequence.current++};
  },[]);
  const updateTask=(next)=>{if(!alive.current)return;setTask(next);setTasks(old=>[next,...old.filter(x=>x.id!==next.id)].slice(0,20))};
  useEffect(()=>{
@@ -66,25 +83,28 @@ export default function PhotoReconstruction({kind,onKindChange,onModel}){
  async function select(e){const file=e.target.files?.[0];e.target.value='';if(!file)return;const s=++sequence.current;setError('');setProcessing(true);setConsent(false);setImage('');setPhoto(null);
   try{const data=await prepareImage(file);if(s!==sequence.current)return;setImage(data);setPhoto(file);if(!pending)requestId.current=null}catch(e){if(s===sequence.current)setError(e.message)}finally{if(s===sequence.current)setProcessing(false)}
  }
- async function refresh(){if(refreshing)return;setRefreshing(true);setError('');try{const c=await request('/status');setConnection(c);if(!c.authenticated)return;const data=await request('/tasks');setTasks(data.tasks||[]);const match=requestId.current&&(data.tasks||[]).find(t=>t.requestId===requestId.current);if(match){updateTask(match);if(match.status!=='CREATE_UNCERTAIN'){requestId.current=null;savePending(null);setPending(null)}}else if(task?.id){const found=(data.tasks||[]).find(x=>x.id===task.id);if(found)updateTask(found)}}catch(e){setError(e.message)}finally{setRefreshing(false)}}
- async function generate(){if(submitLock.current||!image||!consent||!connection?.configured||!connection?.authenticated||pending)return;submitLock.current=true;setSubmitting(true);setError('');
+ async function refresh(){if(refreshing)return;setRefreshing(true);setError('');try{const c=await checkConnection();if(!c?.authenticated)return;const data=await request('/tasks');if(!alive.current)return;setTasks(data.tasks||[]);const match=requestId.current&&(data.tasks||[]).find(t=>t.requestId===requestId.current);if(match){updateTask(match);if(match.status!=='CREATE_UNCERTAIN'){requestId.current=null;savePending(null);setPending(null)}}else if(task?.id){const found=(data.tasks||[]).find(x=>x.id===task.id);if(found)updateTask(found)}}catch(e){if(alive.current)setError(e.message)}finally{if(alive.current)setRefreshing(false)}}
+ async function generate(){if(submitLock.current||connectionPhase!=='ready'||!image||!consent||!connection?.configured||!connection?.authenticated||pending)return;submitLock.current=true;setSubmitting(true);setError('');
   const id=requestId.current||crypto.randomUUID();requestId.current=id;savePending(id);setPending(id);
   try{const next=await request('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageDataUrl:image,consent:true,requestId:id})});updateTask(next);if(next.status!=='CREATE_UNCERTAIN'){requestId.current=null;savePending(null);setPending(null)}}
   catch(e){setError(e.message+(e.status&&e.status<500?'':' 请先查询任务，暂勿重新提交。'));if(e.status&&e.status<500&&e.code!=='CREATE_UNCERTAIN'){requestId.current=null;savePending(null);setPending(null)}}
   finally{submitLock.current=false;setSubmitting(false)}
  }
  async function load(){if(!task?.hasGlb||loadingModel)return;setLoadingModel(true);setError('');try{const blob=await modelBlob('/tasks/'+encodeURIComponent(task.id)+'/model.glb');if(alive.current)onModel(new File([blob],`form3d-${task.id}.glb`,{type:'model/gltf-binary'}))}catch(e){if(alive.current)setError(e.message)}finally{if(alive.current)setLoadingModel(false)}}
- const active=task&&!TERMINAL.has(task.status),canGenerate=!!(connection?.configured&&connection?.authenticated&&image&&consent&&!processing&&!submitting&&!pending&&!active);
- return <div className="panel"><div className="head"><div><div className="eyebrow">FIG 1.0 / PHOTO TO 3D</div><h2>从一张照片生成模型</h2></div><span className="tag">{connection?.configured?'重建服务已配置':connection?'等待服务配置':'检查连接中'}</span></div><div className="body"><label className="upload blueprint">{image?<img className="photo" src={image} alt="待生成模型的照片"/>:<><span className="plus">＋</span><strong>{processing?'正在处理图片…':'选择一张主体清晰的照片'}</strong><p>JPG / PNG / WebP · 不超过 20 MB</p><span className="outline">选择图片　↗</span></>}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={select} disabled={processing||submitting}/></label>{photo&&<p className="filename">{photo.name} · 已在浏览器缩小并转为 PNG</p>}<div className="field"><label>制作对象</label><div className="choices">{['人像','宠物','手办','器物','建筑','植物'].map(x=><button className={kind===x?'selected':''} onClick={()=>onKindChange(x)} key={x}>{x}</button>)}</div></div>
- {!connection?.configured&&<div className="notice"><strong>{connection?'图片重建服务待配置':'正在检查重建服务'}</strong><br/>网站接入已就绪，配置服务端 Meshy API 密钥和额度后才可生成。选择照片只会在浏览器预览。</div>}
- {connection&&!connection.authenticated&&<div className="notice">工作台可公开浏览。生成服务目前由项目组使用，请先<a href="/login" target="_top">团队登录</a>后生成或查看任务。</div>}
- {connection?.authenticated&&<div className="notice">已登录团队工作台，任务记录由项目组共享。<a href="/logout">退出登录</a></div>}
+ const active=task&&!TERMINAL.has(task.status),canGenerate=!!(connectionPhase==='ready'&&connection?.configured&&connection?.authenticated&&image&&consent&&!processing&&!submitting&&!pending&&!active);
+ const serviceLabel=connectionPhase==='checking'?'检查连接中':connectionPhase==='error'?'连接暂时中断':connection?.configured?'云端生成已接入':'生成服务暂未开放';
+ return <div className="panel"><div className="head"><div><div className="eyebrow">FIG 1.0 / PHOTO TO 3D</div><h2>从一张照片生成模型</h2></div><span className="tag" aria-live="polite">{serviceLabel}</span></div><div className="body"><label className="upload blueprint">{image?<img className="photo" src={image} alt="待生成模型的照片"/>:<><span className="plus">＋</span><strong>{processing?'正在处理图片…':'选择一张主体清晰的照片'}</strong><p>JPG / PNG / WebP · 不超过 20 MB</p><span className="outline">选择图片　↗</span></>}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={select} disabled={processing||submitting}/></label>{photo&&<p className="filename">{photo.name} · 已在浏览器缩小并转为 PNG</p>}<div className="field"><label>制作对象</label><div className="choices">{['人像','宠物','手办','器物','建筑','植物'].map(x=><button className={kind===x?'selected':''} onClick={()=>onKindChange(x)} key={x}>{x}</button>)}</div></div>
+ {connectionPhase==='checking'&&<div className="notice" role="status">正在检查云端生成服务…</div>}
+ {connectionPhase==='error'&&<div className="error" role="alert"><strong>暂时无法连接生成服务</strong><p>当前无法确认服务状态。已选照片会保留在本页，请稍后重试。</p><button className="outline" onClick={refresh} disabled={refreshing||submitting}>重新连接</button></div>}
+ {connectionPhase==='ready'&&!connection.configured&&<div className="notice"><strong>生成服务暂未开放</strong><p>请稍后重试。你仍可调整制作参数、查看预估报价，或导入已有模型。</p><button className="outline" onClick={refresh} disabled={refreshing||submitting}>刷新服务状态</button></div>}
+ {connectionPhase==='ready'&&connection.configured&&!connection.authenticated&&<div className="notice"><strong>云端生成已接入</strong><p>登录后即可在此提交照片、查看生成进度和下载模型。当前由项目组使用。</p><a className="outline" style={{display:'inline-block',marginTop:8}} href="/login" target="_top">团队登录并开始生成　→</a></div>}
+ {connectionPhase==='ready'&&connection?.authenticated&&<div className="notice">已登录团队工作台，任务记录由项目组共享。{connection.configured&&'选择照片并确认后即可提交生成。'} <a href="/logout">退出登录</a></div>}
  <label style={{display:'flex',alignItems:'flex-start',gap:10,marginTop:18,fontSize:12,lineHeight:1.7,color:'#647a96'}}><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={submitting} style={{marginTop:4}}/><span>我同意将处理后的照片发送给 Meshy 生成 3D 模型；生成会消耗服务额度，照片会按第三方政策处理。请仅上传有权使用的图片。</span></label>
- <button className="primary" onClick={generate} disabled={!canGenerate}>{submitting?'正在提交，请勿关闭页面…':pending?'提交状态待核对':active?'模型生成中…':'生成 3D 模型　→'}</button>
+ <button className="primary" onClick={generate} disabled={!canGenerate}>{submitting?'正在提交，请勿关闭页面…':pending?'提交状态待核对':active?'模型生成中…':connectionPhase==='ready'&&connection?.configured&&!connection.authenticated?'请先团队登录':'生成 3D 模型　→'}</button>
  {error&&<div className="error" role="alert">{error}</div>}
  {pending&&<div className="notice">已保留本次请求标识。请先查询任务；若仍未找到，请由管理员核对 Meshy 后再重新创建，避免重复计费。</div>}
  {task&&<div className="summary" aria-live="polite"><div className="row"><b>{LABELS[task.status]||task.status}</b><span className="tag">{Number.isFinite(task.progress)?Math.round(task.progress)+'%':''}</span></div><progress max="100" value={Number.isFinite(task.progress)?task.progress:0} style={{width:'100%',margin:'12px 0',accentColor:'#174e9e'}}/><p>任务 {task.id}</p>{task.error&&<p>{task.error}</p>}{task.status==='SUCCEEDED'&&<><p>生成模型仍需检查实际可打印性。请及时下载保存，第三方文件链接会过期。</p><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}>{task.hasGlb&&<button className="outline" onClick={load} disabled={loadingModel}>{loadingModel?'正在加载…':'加载到 3D 预览'}</button>}{task.hasGlb&&<a className="outline" href={ROOT+'/tasks/'+encodeURIComponent(task.id)+'/model.glb'} download>下载 GLB</a>}{task.hasStl&&<a className="outline" href={ROOT+'/tasks/'+encodeURIComponent(task.id)+'/model.stl'} download>下载 STL</a>}</div></>}</div>}
- <div className="row" style={{marginTop:18}}><b style={{fontSize:13}}>我的重建任务</b><button className="outline" style={{padding:'8px 12px'}} onClick={refresh} disabled={refreshing||submitting}>{refreshing?'查询中…':'查询任务'}</button></div>
- {!tasks.length?<p style={{marginTop:10}}>暂无可显示的任务。</p>:<div style={{marginTop:10}}>{tasks.map(t=><button key={t.id} className="outline" onClick={()=>{setTask(t);setError('')}} style={{width:'100%',marginTop:7,textAlign:'left',padding:11,display:'flex',justifyContent:'space-between',gap:10}}><span>{t.id.slice(0,12)}…</span><span>{LABELS[t.status]||t.status}</span></button>)}</div>}
+ <div className="row" style={{marginTop:18}}><b style={{fontSize:13}}>团队重建任务</b><button className="outline" style={{padding:'8px 12px'}} onClick={refresh} disabled={refreshing||submitting}>{refreshing?'查询中…':connection?.authenticated?'查询任务':'刷新服务状态'}</button></div>
+ {!tasks.length?<p style={{marginTop:10}}>{connectionPhase==='ready'&&!connection?.authenticated?'登录后查看团队任务。':'暂无可显示的任务。'}</p>:<div style={{marginTop:10}}>{tasks.map(t=><button key={t.id} className="outline" onClick={()=>{setTask(t);setError('')}} style={{width:'100%',marginTop:7,textAlign:'left',padding:11,display:'flex',justifyContent:'space-between',gap:10}}><span>{t.id.slice(0,12)}…</span><span>{LABELS[t.status]||t.status}</span></button>)}</div>}
  </div></div>;
 }

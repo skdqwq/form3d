@@ -19,11 +19,14 @@ export function createApi({adapter=meshy,now=Date.now}={}){
   if(!path.startsWith(PREFIX))return null;
   try{
    const user=request.headers.get('oai-authenticated-user-id');
-   if(!user&&path===PREFIX+'/status'&&request.method==='GET')return json({configured:false,authenticated:false});
-   if(!user)return json({error:'请先登录后使用照片重建。',code:'UNAUTHENTICATED'},401);
+   if(!user&&!(path===PREFIX+'/status'&&request.method==='GET'))return json({error:'请先登录后使用照片重建。',code:'UNAUTHENTICATED'},401);
    meshy.meshyRegion(env);
-   const configured=typeof env.MESHY_API_KEY==='string'&&!!env.MESHY_API_KEY.trim();
-   if(path===PREFIX+'/status'&&request.method==='GET')return json({configured:configured&&!!env.DB,authenticated:true,provider:'Meshy',maxTasksPerDay:3});
+   const configured=typeof env.MESHY_API_KEY==='string'&&!!env.MESHY_API_KEY.trim()&&!/[\r\n]/.test(env.MESHY_API_KEY);
+   if(path===PREFIX+'/status'&&request.method==='GET'){
+    // Configuration readiness is public; task history and paid submissions remain protected.
+    // This local check never calls the provider or reveals keys, balances or account details.
+    return json({configured:configured&&!!env.DB,authenticated:!!user,...(user?{provider:'Meshy',maxTasksPerDay:3}:{})});
+   }
    if(!env.DB)return json({error:'任务存储尚未就绪。',code:'STORAGE_NOT_CONFIGURED'},503);
    if(!['GET','POST'].includes(request.method))return json({error:'请求方法不支持。'},405);
    if(request.method==='POST'){
