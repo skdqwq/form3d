@@ -25,7 +25,7 @@ export function configuration(env = process.env) {
   if (origin.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) throw new Error('Public deployments require an HTTPS APP_ORIGIN');
   const invalidSecret = value => typeof value !== 'string' || value !== value.trim() || /[\u0000-\u001f\u007f-\u009f]/.test(value) || /^(change|replace|example|your)/i.test(value);
   const accessCode = normalizeTeamCode(env.FORM3D_ACCESS_TOKEN);
-  if (invalidSecret(accessCode) || accessCode.length > 512 || !(/^\p{Script=Han}{3,}$/u.test(accessCode) || (accessCode.length >= 10 && /[A-Za-z]/.test(accessCode) && /[0-9]/.test(accessCode)))) throw new Error('FORM3D_ACCESS_TOKEN must contain at least 3 Chinese characters or at least 10 characters including letters and digits, up to 512 characters; controls and placeholders are not allowed');
+  if (invalidSecret(accessCode) || accessCode.length > 512 || !(/^[A-Za-z]{3}$/.test(accessCode) || /^\p{Script=Han}{3,}$/u.test(accessCode) || (accessCode.length >= 10 && /[A-Za-z]/.test(accessCode) && /[0-9]/.test(accessCode)))) throw new Error('FORM3D_ACCESS_TOKEN must contain exactly 3 ASCII letters, at least 3 Chinese characters, or at least 10 characters including letters and digits, up to 512 characters; controls and placeholders are not allowed');
   if (invalidSecret(env.SESSION_SECRET) || env.SESSION_SECRET.length < 32) throw new Error('SESSION_SECRET must be an independent random secret of at least 32 characters, without control characters, surrounding whitespace or placeholders');
   if (accessCode === env.SESSION_SECRET) throw new Error('Access token and session secret must differ');
   const port = Number(env.PORT || 3103);
